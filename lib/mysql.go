@@ -411,6 +411,15 @@ func (m *MySQLPlugin) FetchMetrics() (map[string]float64, error) {
 	}
 	defer db.Close()
 
+	v, err := m.fetchVersion(db)
+	if err != nil {
+		log.Println(err)
+	} else {
+		if v[0] < 5 || v[0] == 5 && v[1] < 7 {
+			log.Fatalln("This mysql server version is not supported.")
+		}
+	}
+
 	stat := make(map[string]float64)
 	err = m.fetchShowStatus(db, stat)
 	if err != nil {
