@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
 	mp "github.com/mackerelio/go-mackerel-plugin"
 	// MySQL Driver
 	"github.com/go-sql-driver/mysql"
@@ -47,12 +50,12 @@ func init() {
 }
 
 func (m *MySQLPlugin) defaultGraphdef() map[string]mp.Graphs {
-	labelPrefix := strings.Title(strings.Replace(m.MetricKeyPrefix(), "mysql", "MySQL", -1))
+	labelPrefix := cases.Title(language.Und, cases.NoLower).String(strings.Replace(m.MetricKeyPrefix(), "mysql", "MySQL", -1))
 
 	capacityMetrics := []mp.Metrics{
 		{Name: "PercentageOfConnections", Label: "Percentage Of Connections", Diff: false, Stacked: false},
 	}
-	if m.DisableInnoDB != true {
+	if !m.DisableInnoDB {
 		capacityMetrics = append(capacityMetrics, mp.Metrics{
 			Name: "PercentageOfBufferPool", Label: "Percentage Of Buffer Pool", Diff: false, Stacked: false,
 		})
@@ -191,7 +194,7 @@ func (m *MySQLPlugin) fetchVersion(db *sql.DB) (version [3]int, err error) {
 				version[2], _ = strconv.Atoi(xs[2])
 			}
 		}
-		break
+		break //nolint
 	}
 	if version[0] == 0 {
 		err = errors.New("failed to get mysql version")
@@ -371,7 +374,7 @@ func (m *MySQLPlugin) convertInnodbStats(stat map[string]float64) {
 
 func (m *MySQLPlugin) calculateCapacity(stat map[string]float64) {
 	stat["PercentageOfConnections"] = 100.0 * stat["Threads_connected"] / stat["max_connections"]
-	if m.DisableInnoDB != true {
+	if !m.DisableInnoDB {
 		stat["PercentageOfBufferPool"] = 100.0 * stat["database_pages"] / stat["pool_size"]
 	}
 }
@@ -415,7 +418,7 @@ func (m *MySQLPlugin) FetchMetrics() (map[string]float64, error) {
 		return nil, err
 	}
 
-	if m.DisableInnoDB != true {
+	if !m.DisableInnoDB {
 		m.convertInnodbStats(stat)
 		if !m.isAuroraReader {
 			err := m.fetchShowInnodbStatus(db, stat)
@@ -475,7 +478,7 @@ func (m *MySQLPlugin) GraphDefinition() map[string]mp.Graphs {
 }
 
 func (m *MySQLPlugin) addGraphdefWithInnoDBMetrics(graphdef map[string]mp.Graphs) map[string]mp.Graphs {
-	labelPrefix := strings.Title(strings.Replace(m.MetricKeyPrefix(), "mysql", "MySQL", -1))
+	labelPrefix := cases.Title(language.Und, cases.NoLower).String(strings.Replace(m.MetricKeyPrefix(), "mysql", "MySQL", -1))
 	graphdef["innodb_rows"] = mp.Graphs{
 		Label: labelPrefix + " innodb Rows",
 		Unit:  "float",
@@ -666,8 +669,7 @@ func (m *MySQLPlugin) addGraphdefWithInnoDBMetrics(graphdef map[string]mp.Graphs
 }
 
 func (m *MySQLPlugin) addExtendedGraphdef(graphdef map[string]mp.Graphs) map[string]mp.Graphs {
-	//TODO
-	labelPrefix := strings.Title(strings.Replace(m.MetricKeyPrefix(), "mysql", "MySQL", -1))
+	labelPrefix := cases.Title(language.Und, cases.NoLower).String(strings.Replace(m.MetricKeyPrefix(), "mysql", "MySQL", -1))
 	graphdef["query_cache"] = mp.Graphs{
 		Label: labelPrefix + " query Cache",
 		Unit:  "float",

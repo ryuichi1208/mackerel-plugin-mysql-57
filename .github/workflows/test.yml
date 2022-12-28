@@ -11,18 +11,16 @@ on:
 env:
   DEBIAN_FRONTEND: noninteractive
 jobs:
-# TODO
-# It's intended for code migration, so it's now a comment
-# lint:
-#   strategy:
-#     matrix:
-#       os: [ubuntu-latest]
-#   runs-on: ${{ matrix.os }}
-#   steps:
-#     - uses: actions/checkout@v3
-#     - uses: golangci/golangci-lint-action@v3
-#       with:
-#         args: --timeout 2m
+  lint:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: golangci/golangci-lint-action@v3
+        with:
+          args: --timeout 2m
   test:
     strategy:
       matrix:
