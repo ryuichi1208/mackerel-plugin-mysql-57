@@ -231,29 +231,13 @@ func (m *MySQLPlugin) fetchShowInnodbStatus(db *sql.DB, stat map[string]float64)
 	}
 	defer rows.Close()
 
-	columns, err := rows.Columns()
-	if err != nil {
-		return fmt.Errorf("FetchMetrics (fetchShowInnodbStatus): error: %w", err)
-	}
-
-	// when mysql 5.0, return result 1 column.
-	// when more than mysql 5.1, return result 3 columns.
-	count := len(columns)
-	scanner := make([]interface{}, count)
-	scannerPtr := make([]interface{}, count)
-	for i := range columns {
-		scannerPtr[i] = &scanner[i]
-	}
-
 	for rows.Next() {
-		if err := rows.Scan(scannerPtr...); err != nil {
+		var status string
+		if err = rows.Scan(trashScanner{}, trashScanner{}, &status); err != nil {
 			return fmt.Errorf("FetchMetrics (fetchShowInnodbStatus): error: %w", err)
 		}
 
-		c, ok := scanner[count-1].([]byte)
-		if ok {
-			parseInnodbStatus(string(c), stat)
-		}
+		parseInnodbStatus(status, stat)
 	}
 	return nil
 }
