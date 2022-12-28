@@ -155,7 +155,7 @@ Number of rows inserted 3089, updated 220, deleted 212, read 2099881
 END OF INNODB MONITOR OUTPUT`
 	stat := make(map[string]float64)
 
-	parseInnodbStatus(stub, false, stat)
+	parseInnodbStatus(stub, stat)
 	// Innodb Semaphores
 	assert.EqualValues(t, stat["spin_waits"], 947)
 	assert.EqualValues(t, stat["spin_rounds"], 9442)
@@ -389,7 +389,7 @@ END OF INNODB MONITOR OUTPUT
 ============================
 `
 	stat := make(map[string]float64)
-	parseInnodbStatus(stub, false, stat)
+	parseInnodbStatus(stub, stat)
 	// Innodb Semaphores
 	assert.EqualValues(t, stat["spin_waits"], 70)
 	assert.EqualValues(t, stat["spin_rounds"], 0) // empty
@@ -580,7 +580,7 @@ MySQL thread id 2, OS thread handle 0x7efe7cba4700, query id 35 localhost root
 END OF INNODB MONITOR OUTPUT
 ============================`
 	stat := make(map[string]float64)
-	parseInnodbStatus(stub, false, stat)
+	parseInnodbStatus(stub, stat)
 	// Innodb Semaphores
 	assert.EqualValues(t, stat["spin_waits"], 12)
 	assert.EqualValues(t, stat["spin_rounds"], 180)
@@ -798,7 +798,7 @@ func TestParseAio(t *testing.T) {
 
 	for _, tt := range pattern {
 		stat := make(map[string]float64)
-		parseInnodbStatus(tt.stub, false, stat)
+		parseInnodbStatus(tt.stub, stat)
 		assert.EqualValues(t, stat["pending_normal_aio_reads"], tt.reads)
 		assert.EqualValues(t, stat["pending_normal_aio_writes"], tt.writes)
 	}
