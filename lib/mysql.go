@@ -231,29 +231,13 @@ func (m *MySQLPlugin) fetchShowInnodbStatus(db *sql.DB, stat map[string]float64)
 	}
 	defer rows.Close()
 
-	columns, err := rows.Columns()
-	if err != nil {
-		return fmt.Errorf("FetchMetrics (fetchShowInnodbStatus): error: %w", err)
-	}
-
-	// when mysql 5.0, return result 1 column.
-	// when more than mysql 5.1, return result 3 columns.
-	count := len(columns)
-	scanner := make([]interface{}, count)
-	scannerPtr := make([]interface{}, count)
-	for i := range columns {
-		scannerPtr[i] = &scanner[i]
-	}
-
 	for rows.Next() {
-		if err := rows.Scan(scannerPtr...); err != nil {
+		var status string
+		if err = rows.Scan(trashScanner{}, trashScanner{}, &status); err != nil {
 			return fmt.Errorf("FetchMetrics (fetchShowInnodbStatus): error: %w", err)
 		}
 
-		c, ok := scanner[count-1].([]byte)
-		if ok {
-			parseInnodbStatus(string(c), stat)
-		}
+		parseInnodbStatus(status, stat)
 	}
 	return nil
 }
@@ -410,6 +394,15 @@ func (m *MySQLPlugin) FetchMetrics() (map[string]float64, error) {
 		return nil, err
 	}
 	defer db.Close()
+
+	v, err := m.fetchVersion(db)
+	if err != nil {
+		log.Println(err)
+	} else {
+		if v[0] < 5 || v[0] == 5 && v[1] < 7 {
+			log.Fatalln("This mysql server version is not supported.")
+		}
+	}
 
 	stat := make(map[string]float64)
 	err = m.fetchShowStatus(db, stat)

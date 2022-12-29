@@ -16,3 +16,6 @@ mackerel-plugin-mysql [-host=<host>] [-port=<port>] [-username=<username>] [-pas
 command = "/path/to/mackerel-plugin-mysql"
 ```
 
+## Supported MySQL version
+
+mysql 5.7, 8.0 and above
