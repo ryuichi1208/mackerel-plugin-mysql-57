@@ -1250,7 +1250,7 @@ func Do() {
 	optInnoDB := flag.Bool("disable_innodb", false, "Disable InnoDB metrics")
 	optMetricKeyPrefix := flag.String("metric-key-prefix", "mysql", "metric key prefix")
 	optEnableExtended := flag.Bool("enable_extended", false, "Enable Extended metrics")
-	flag.Bool("debug", false, "Print debugging logs to stderr(deprecated)") // backward compatibility
+	flag.Bool("debug", false, "Print debugging logs to stderr(obsoleted)") // backward compatibility
 	flag.Parse()
 
 	var mysql MySQLPlugin
