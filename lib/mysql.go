@@ -230,20 +230,6 @@ func (m *MySQLPlugin) fetchShowInnodbStatus(db *sql.DB, stat map[string]float64)
 		log.Fatalln("Hint: If you don't use InnoDB and see InnoDB Status error, you should set -disable_innodb")
 	}
 	defer rows.Close()
-	var trxIDHexFormat bool
-	v, err := m.fetchVersion(db)
-	if err != nil {
-		log.Println(err)
-	}
-	// Transaction IDs are printed in hex format in version < 5.6.4.
-	//   Ref: https://github.com/mysql/mysql-server/commit/3420dc52b68c9afcee0a19ba7c19a73c2fbb2913
-	//        https://github.com/mysql/mysql-server/blob/mysql-5.6.3/storage/innobase/include/trx0types.h#L32
-	//        https://github.com/mysql/mysql-server/blob/mysql-5.6.4/storage/innobase/include/trx0types.h#L32
-	// MariaDB 10.x is recognized as newer than 5.6.4, which should be correct.
-	//   Ref: https://github.com/MariaDB/server/blob/mariadb-10.0.0/storage/innobase/include/trx0types.h#L32
-	if v[0] < 5 || v[0] == 5 && v[1] < 6 || v[0] == 5 && v[1] == 6 && v[2] < 4 {
-		trxIDHexFormat = true
-	}
 
 	columns, err := rows.Columns()
 	if err != nil {
@@ -266,7 +252,7 @@ func (m *MySQLPlugin) fetchShowInnodbStatus(db *sql.DB, stat map[string]float64)
 
 		c, ok := scanner[count-1].([]byte)
 		if ok {
-			parseInnodbStatus(string(c), trxIDHexFormat, stat)
+			parseInnodbStatus(string(c), stat)
 		}
 	}
 	return nil
@@ -841,7 +827,7 @@ func calculateAio(s string) (int, error) {
 	return strconv.Atoi(v)
 }
 
-func parseInnodbStatus(str string, trxIDHexFormat bool, p map[string]float64) {
+func parseInnodbStatus(str string, p map[string]float64) {
 	isTransaction := false
 	prevLine := ""
 
@@ -899,7 +885,7 @@ func parseInnodbStatus(str string, trxIDHexFormat bool, p map[string]float64) {
 			if len(record) >= 5 {
 				loVal = record[4]
 			}
-			val := makeBigint(record[3], loVal, trxIDHexFormat)
+			val := makeBigint(record[3], loVal)
 			increaseMap(p, "innodb_transactions", fmt.Sprintf("%d", val))
 			isTransaction = true
 			continue
@@ -908,7 +894,7 @@ func parseInnodbStatus(str string, trxIDHexFormat bool, p map[string]float64) {
 			if record[7] == "undo" {
 				record[7] = ""
 			}
-			val := makeBigint(record[6], record[7], trxIDHexFormat)
+			val := makeBigint(record[6], record[7])
 			trx := p["innodb_transactions"] - float64(val)
 			increaseMap(p, "unpurged_txns", fmt.Sprintf("%.f", trx))
 			continue
@@ -1081,7 +1067,7 @@ func parseInnodbStatus(str string, trxIDHexFormat bool, p map[string]float64) {
 				continue
 			}
 			if len(record) >= 5 {
-				val = float64(makeBigint(record[3], record[4], false))
+				val = float64(makeBigint(record[3], record[4]))
 			}
 			p["log_bytes_written"] = val
 			continue
@@ -1092,7 +1078,7 @@ func parseInnodbStatus(str string, trxIDHexFormat bool, p map[string]float64) {
 				continue
 			}
 			if len(record) >= 6 {
-				val = float64(makeBigint(record[4], record[5], false))
+				val = float64(makeBigint(record[4], record[5]))
 			}
 			p["log_bytes_flushed"] = val
 			continue
@@ -1103,7 +1089,7 @@ func parseInnodbStatus(str string, trxIDHexFormat bool, p map[string]float64) {
 				continue
 			}
 			if len(record) >= 5 {
-				val = float64(makeBigint(record[3], record[4], false))
+				val = float64(makeBigint(record[3], record[4]))
 			}
 			p["last_checkpoint"] = val
 			continue
@@ -1219,12 +1205,8 @@ func increaseMap(p map[string]float64, key string, src string) {
 	p[key] = p[key] + val
 }
 
-func makeBigint(hi string, lo string, hexFormat bool) int64 {
+func makeBigint(hi string, lo string) int64 {
 	if lo == "" {
-		if hexFormat {
-			val, _ := strconv.ParseInt(hi, 16, 64)
-			return val
-		}
 		val, _ := strconv.ParseInt(hi, 10, 64)
 		return val
 	}
