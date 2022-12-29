@@ -13,7 +13,7 @@ import (
 
 	mp "github.com/mackerelio/go-mackerel-plugin"
 	// MySQL Driver
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 var (
@@ -413,9 +413,13 @@ func (m *MySQLPlugin) FetchMetrics() (map[string]float64, error) {
 		proto = "unix"
 	}
 
-	// 	username:password@unix(/var/lib/mysql/mysql.sock)/dbname?param=value
-	dsn := fmt.Sprintf("%s:%s@%s(%s)/", m.Username, m.Password, proto, m.Target)
-	db, err := sql.Open("mysql", dsn)
+	config := mysql.NewConfig()
+	config.User = m.Username
+	config.Passwd = m.Password
+	config.Net = proto
+	config.Addr = m.Target
+
+	db, err := sql.Open("mysql", config.FormatDSN())
 	if err != nil {
 		return nil, err
 	}
