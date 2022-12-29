@@ -1,5 +1,7 @@
 #!/bin/sh
 
+go install github.com/lufia/graphitemetrictest/cmd/graphite-metric-test@latest || exit
+
 prog=$(basename "$0")
 if ! [ -S /var/run/docker.sock ]
 then

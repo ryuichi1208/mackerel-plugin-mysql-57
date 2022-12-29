@@ -1,24 +1,30 @@
 package mpmysql
 
 import (
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 
 	mp "github.com/mackerelio/go-mackerel-plugin"
-	"github.com/ziutek/mymysql/mysql"
-
 	// MySQL Driver
-	"github.com/ziutek/mymysql/native"
+	"github.com/go-sql-driver/mysql"
 )
 
 var (
 	processState map[string]bool
 )
+
+type trashScanner struct{}
+
+func (trashScanner) Scan(interface{}) error {
+	return nil
+}
 
 func init() {
 	processState = make(map[string]bool, 0)
@@ -151,7 +157,6 @@ type MySQLPlugin struct {
 	isUnixSocket   bool
 	EnableExtended bool
 	isAuroraReader bool
-	Debug          bool
 }
 
 // MetricKeyPrefix returns the metrics key prefix
@@ -162,28 +167,31 @@ func (m *MySQLPlugin) MetricKeyPrefix() string {
 	return m.prefix
 }
 
-func (m *MySQLPlugin) fetchVersion(db mysql.Conn) (version [3]int, err error) {
-	rows, _, err := db.Query("SHOW VARIABLES WHERE VARIABLE_NAME = 'VERSION'")
+func (m *MySQLPlugin) fetchVersion(db *sql.DB) (version [3]int, err error) {
+	rows, err := db.Query("SHOW VARIABLES WHERE VARIABLE_NAME = 'VERSION'")
 	if err != nil {
 		return
 	}
-	for _, row := range rows {
-		if len(row) > 1 {
-			versionString := string(row[1].([]byte))
-			if i := strings.IndexRune(versionString, '-'); i >= 0 {
-				// Trim -log or -debug, -MariaDB-...
-				versionString = versionString[:i]
-			}
-			xs := strings.Split(versionString, ".")
-			if len(xs) >= 2 {
-				version[0], _ = strconv.Atoi(xs[0])
-				version[1], _ = strconv.Atoi(xs[1])
-				if len(xs) >= 3 {
-					version[2], _ = strconv.Atoi(xs[2])
-				}
-			}
-			break
+	defer rows.Close()
+	for rows.Next() {
+		var versionString string
+		if err = rows.Scan(trashScanner{}, &versionString); err != nil {
+			err = fmt.Errorf("fetchVersion : %w", err)
+			return
 		}
+		if i := strings.IndexRune(versionString, '-'); i >= 0 {
+			// Trim -log or -debug, -MariaDB-...
+			versionString = versionString[:i]
+		}
+		xs := strings.Split(versionString, ".")
+		if len(xs) >= 2 {
+			version[0], _ = strconv.Atoi(xs[0])
+			version[1], _ = strconv.Atoi(xs[1])
+			if len(xs) >= 3 {
+				version[2], _ = strconv.Atoi(xs[2])
+			}
+		}
+		break
 	}
 	if version[0] == 0 {
 		err = errors.New("failed to get mysql version")
@@ -192,39 +200,36 @@ func (m *MySQLPlugin) fetchVersion(db mysql.Conn) (version [3]int, err error) {
 	return
 }
 
-func (m *MySQLPlugin) fetchShowStatus(db mysql.Conn, stat map[string]float64) error {
-	rows, _, err := db.Query("show /*!50002 global */ status")
+func (m *MySQLPlugin) fetchShowStatus(db *sql.DB, stat map[string]float64) error {
+	rows, err := db.Query("show /*!50002 global */ status")
 	if err != nil {
-		log.Fatalln("FetchMetrics (Status): ", err)
-		return err
+		return fmt.Errorf("FetchMetrics (Status): %w", err)
 	}
-
-	for _, row := range rows {
-		if len(row) > 1 {
-			variableName := string(row[0].([]byte))
-			if err != nil {
-				log.Fatalln("FetchMetrics (Status Fetch): ", err)
-				return err
-			}
-			v, err := atof(string(row[1].([]byte)))
-			if err != nil {
-				continue
-			}
-			stat[variableName] = v
-		} else {
-			log.Fatalln("FetchMetrics (Status): row length is too small: ", len(row))
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			variableName string
+			value        string
+		)
+		if err = rows.Scan(&variableName, &value); err != nil {
+			return fmt.Errorf("FetchMetrics (Status): %w", err)
 		}
+		v, err := atof(value)
+		if err != nil {
+			continue
+		}
+		stat[variableName] = v
 	}
 	return nil
 }
 
-func (m *MySQLPlugin) fetchShowInnodbStatus(db mysql.Conn, stat map[string]float64) error {
-	row, _, err := db.QueryFirst("SHOW /*!50000 ENGINE*/ INNODB STATUS")
+func (m *MySQLPlugin) fetchShowInnodbStatus(db *sql.DB, stat map[string]float64) error {
+	rows, err := db.Query("SHOW /*!50000 ENGINE*/ INNODB STATUS")
 	if err != nil {
 		log.Println("FetchMetrics (InnoDB Status): ", err)
 		log.Fatalln("Hint: If you don't use InnoDB and see InnoDB Status error, you should set -disable_innodb")
 	}
-
+	defer rows.Close()
 	var trxIDHexFormat bool
 	v, err := m.fetchVersion(db)
 	if err != nil {
@@ -240,37 +245,54 @@ func (m *MySQLPlugin) fetchShowInnodbStatus(db mysql.Conn, stat map[string]float
 		trxIDHexFormat = true
 	}
 
-	if len(row) > 0 {
-		parseInnodbStatus(string(row[len(row)-1].([]byte)), trxIDHexFormat, stat)
-	} else {
-		return fmt.Errorf("row length is too small: %d", len(row))
+	columns, err := rows.Columns()
+	if err != nil {
+		return fmt.Errorf("FetchMetrics (fetchShowInnodbStatus): error: %w", err)
+	}
+
+	// when mysql 5.0, return result 1 column.
+	// when more than mysql 5.1, return result 3 columns.
+	count := len(columns)
+	scanner := make([]interface{}, count)
+	scannerPtr := make([]interface{}, count)
+	for i := range columns {
+		scannerPtr[i] = &scanner[i]
+	}
+
+	for rows.Next() {
+		if err := rows.Scan(scannerPtr...); err != nil {
+			return fmt.Errorf("FetchMetrics (fetchShowInnodbStatus): error: %w", err)
+		}
+
+		c, ok := scanner[count-1].([]byte)
+		if ok {
+			parseInnodbStatus(string(c), trxIDHexFormat, stat)
+		}
 	}
 	return nil
 }
 
-func (m *MySQLPlugin) fetchShowVariables(db mysql.Conn, stat map[string]float64) error {
-	rows, _, err := db.Query("SHOW VARIABLES")
+func (m *MySQLPlugin) fetchShowVariables(db *sql.DB, stat map[string]float64) error {
+	rows, err := db.Query("SHOW VARIABLES")
 	if err != nil {
-		log.Fatalln("FetchMetrics (Variables): ", err)
+		return fmt.Errorf("FetchMetrics (Variables): %w", err)
 	}
-
+	defer rows.Close()
 	rawStat := make(map[string]string)
-	for _, row := range rows {
-		if len(row) > 1 {
-			variableName := string(row[0].([]byte))
-			if err != nil {
-				log.Println("FetchMetrics (Fetch Variables): ", err)
-			}
-			value := string(row[1].([]byte))
-			rawStat[variableName] = value
-			v, err := atof(value)
-			if err != nil {
-				continue
-			}
-			stat[variableName] = v
-		} else {
-			log.Fatalln("FetchMetrics (Variables): row length is too small: ", len(row))
+	for rows.Next() {
+		var (
+			variableName string
+			value        string
+		)
+		if err := rows.Scan(&variableName, &value); err != nil {
+			return fmt.Errorf("FetchMetrics (Variables): error: %w", err)
 		}
+		rawStat[variableName] = value
+		v, err := atof(value)
+		if err != nil {
+			continue
+		}
+		stat[variableName] = v
 	}
 
 	m.isAuroraReader = rawStat["aurora_version"] != "" && rawStat["innodb_read_only"] == "ON"
@@ -278,7 +300,7 @@ func (m *MySQLPlugin) fetchShowVariables(db mysql.Conn, stat map[string]float64)
 	if m.EnableExtended {
 		err = fetchShowVariablesBackwardCompatibile(stat)
 		if err != nil {
-			log.Fatalln("FetchExtendedMetrics (Fetch Variables): ", err)
+			return fmt.Errorf("FetchExtendedMetrics (Fetch Variables): %w", err)
 		}
 		if _, found := stat["key_cache_block_size"]; found {
 			if _, found = stat["Key_blocks_unused"]; found {
@@ -300,51 +322,57 @@ func fetchShowVariablesBackwardCompatibile(stat map[string]float64) error {
 	return nil
 }
 
-func (m *MySQLPlugin) fetchShowSlaveStatus(db mysql.Conn, stat map[string]float64) error {
-	rows, res, err := db.Query("show slave status")
+func (m *MySQLPlugin) fetchShowSlaveStatus(db *sql.DB, stat map[string]float64) error {
+	rows, err := db.Query("show slave status")
 	if err != nil {
-		log.Fatalln("FetchMetrics (Slave Status): ", err)
-		return err
+		return fmt.Errorf("FetchMetrics (Slave Status): %w", err)
 	}
-
-	for _, row := range rows {
-		idx := res.Map("Seconds_Behind_Master")
-		switch row[idx].(type) {
-		case nil:
-			// nop
-		default:
-			Value := row.Int(idx)
-			stat["Seconds_Behind_Master"] = float64(Value)
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			variableName string
+			value        *string
+		)
+		if err := rows.Scan(&variableName, &value); err != nil {
+			return fmt.Errorf("FetchMetrics (Slave Status): %w", err)
+		}
+		if variableName == "Seconds_Behind_Master" {
+			if value != nil {
+				f, err := atof(*value)
+				if err != nil {
+					return err
+				}
+				stat["Seconds_Behind_Master"] = f
+			}
 		}
 	}
 	return nil
 }
 
-func (m *MySQLPlugin) fetchProcesslist(db mysql.Conn, stat map[string]float64) error {
-	rows, _, err := db.Query("SHOW PROCESSLIST")
+func (m *MySQLPlugin) fetchProcesslist(db *sql.DB, stat map[string]float64) error {
+	rows, err := db.Query("SHOW PROCESSLIST")
 	if err != nil {
-		log.Fatalln("FetchMetrics (Processlist): ", err)
-		return err
+		return fmt.Errorf("FetchMetrics (Processlist): %w", err)
 	}
+	defer rows.Close()
 
 	for k := range processState {
 		stat[k] = 0
 	}
 
-	for _, row := range rows {
-		if len(row) > 1 {
-			var state string
-			if row[6] == nil {
-				state = "NULL"
-			} else {
-				state = string(row[6].([]byte))
-			}
-			parseProcesslist(state, stat)
-		} else {
-			log.Fatalln("FetchMetrics (Processlist): row length is too small: ", len(row))
+	for rows.Next() {
+		var rawState *string
+		if err := rows.Scan(trashScanner{}, trashScanner{}, trashScanner{}, trashScanner{}, trashScanner{}, trashScanner{}, &rawState, trashScanner{}); err != nil {
+			return fmt.Errorf("FetchMetrics (Processlist): %w", err)
 		}
+		var state string
+		if rawState == nil {
+			state = "NULL"
+		} else {
+			state = *rawState
+		}
+		parseProcesslist(state, stat)
 	}
-
 	return nil
 }
 
@@ -384,22 +412,29 @@ func (m *MySQLPlugin) FetchMetrics() (map[string]float64, error) {
 	if m.isUnixSocket {
 		proto = "unix"
 	}
-	db := mysql.New(proto, "", m.Target, m.Username, m.Password, "")
-	switch c := db.(type) {
-	case *native.Conn:
-		c.Debug = m.Debug
-	}
-	err := db.Connect()
+
+	config := mysql.NewConfig()
+	config.User = m.Username
+	config.Passwd = m.Password
+	config.Net = proto
+	config.Addr = m.Target
+
+	db, err := sql.Open("mysql", config.FormatDSN())
 	if err != nil {
-		log.Fatalln("FetchMetrics (DB Connect): ", err)
 		return nil, err
 	}
 	defer db.Close()
 
 	stat := make(map[string]float64)
-	m.fetchShowStatus(db, stat)
+	err = m.fetchShowStatus(db, stat)
+	if err != nil {
+		return nil, err
+	}
 
-	m.fetchShowVariables(db, stat)
+	err = m.fetchShowVariables(db, stat)
+	if err != nil {
+		return nil, err
+	}
 
 	if m.DisableInnoDB != true {
 		m.convertInnodbStats(stat)
@@ -412,10 +447,16 @@ func (m *MySQLPlugin) FetchMetrics() (map[string]float64, error) {
 		}
 	}
 
-	m.fetchShowSlaveStatus(db, stat)
+	err = m.fetchShowSlaveStatus(db, stat)
+	if err != nil {
+		return nil, err
+	}
 
 	if m.EnableExtended {
-		m.fetchProcesslist(db, stat)
+		err = m.fetchProcesslist(db, stat)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	m.calculateCapacity(stat)
@@ -1213,7 +1254,7 @@ func Do() {
 	optInnoDB := flag.Bool("disable_innodb", false, "Disable InnoDB metrics")
 	optMetricKeyPrefix := flag.String("metric-key-prefix", "mysql", "metric key prefix")
 	optEnableExtended := flag.Bool("enable_extended", false, "Enable Extended metrics")
-	optDebug := flag.Bool("debug", false, "Print debugging logs to stderr")
+	flag.Bool("debug", false, "Print debugging logs to stderr(obsoleted)") // backward compatibility
 	flag.Parse()
 
 	var mysql MySQLPlugin
@@ -1222,14 +1263,13 @@ func Do() {
 		mysql.Target = *optSocket
 		mysql.isUnixSocket = true
 	} else {
-		mysql.Target = fmt.Sprintf("%s:%s", *optHost, *optPort)
+		mysql.Target = net.JoinHostPort(*optHost, *optPort)
 	}
 	mysql.Username = *optUser
 	mysql.Password = *optPass
 	mysql.DisableInnoDB = *optInnoDB
 	mysql.prefix = *optMetricKeyPrefix
 	mysql.EnableExtended = *optEnableExtended
-	mysql.Debug = *optDebug
 	helper := mp.NewMackerelPlugin(&mysql)
 	helper.Tempfile = *optTempfile
 	helper.Run()

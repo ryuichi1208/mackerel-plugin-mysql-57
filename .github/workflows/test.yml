@@ -42,3 +42,5 @@ jobs:
           ${{ runner.os }}-go-
     - run: |
         make test
+    - run: |
+        ./test.sh
