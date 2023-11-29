@@ -391,6 +391,7 @@ func (m *MySQLPlugin) FetchMetrics() (map[string]float64, error) {
 	config.Passwd = m.Password
 	config.Net = proto
 	config.Addr = m.Target
+	config.AllowOldPasswords = true
 
 	db, err := sql.Open("mysql", config.FormatDSN())
 	if err != nil {
